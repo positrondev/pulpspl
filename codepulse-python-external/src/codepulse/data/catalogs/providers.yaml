@@ -1,0 +1,88 @@
+# Model-provider SDK call signatures. Patterns are shell-style globs over the dotted
+# qualified name the import resolver produces (`*` matches any characters, dots included),
+# e.g. `client.with_options(timeout=5).chat.completions.create` resolves to
+# `openai.OpenAI.with_options.chat.completions.create`.
+#
+# Projects add their own SDKs or internal gateways under `catalogs: {providers: [...]}`
+# in codepulse.yaml; entries there extend this list.
+
+- name: openai
+  calls:
+    - "openai.*OpenAI*.chat.completions.create"
+    - "openai.*OpenAI*.chat.completions.parse"
+    - "openai.*OpenAI*.beta.chat.completions.parse"
+    - "openai.*OpenAI*.responses.create"
+    - "openai.*OpenAI*.responses.parse"
+    - "openai.*OpenAI*.completions.create"
+    - "openai.chat.completions.create"
+    - "openai.responses.create"
+  timeout_kwargs: [timeout]
+  token_limit_kwargs: [max_tokens, max_completion_tokens, max_output_tokens]
+  retry_kwargs: [max_retries]
+  default_retries: 2
+  error_types: ["openai.*"]
+
+- name: openai-embeddings
+  calls:
+    - "openai.*OpenAI*.embeddings.create"
+  timeout_kwargs: [timeout]
+  token_limit_kwargs: []          # no generated output to cap
+  retry_kwargs: [max_retries]
+  default_retries: 2
+  error_types: ["openai.*"]
+
+- name: anthropic
+  calls:
+    - "anthropic.*Anthropic*.messages.create"
+    - "anthropic.*Anthropic*.messages.stream"
+    - "anthropic.*Anthropic*.beta.messages.create"
+  timeout_kwargs: [timeout]
+  token_limit_kwargs: [max_tokens]
+  retry_kwargs: [max_retries]
+  default_retries: 2
+  error_types: ["anthropic.*"]
+
+- name: langchain-chat
+  calls:
+    - "langchain_*.Chat*.invoke"
+    - "langchain_*.Chat*.ainvoke"
+    - "langchain_*.Chat*.batch"
+    - "langchain_*.Chat*.abatch"
+    - "langchain_*.Chat*.stream"
+    - "langchain_*.Chat*.astream"
+    - "langchain.chat_models.init_chat_model*.invoke"
+    - "langchain.chat_models.init_chat_model*.ainvoke"
+  timeout_kwargs: [timeout, request_timeout, default_request_timeout]
+  token_limit_kwargs: [max_tokens, max_completion_tokens, max_output_tokens, num_predict]
+  retry_kwargs: [max_retries]
+  default_retries: 2
+  error_types:
+    - "openai.*"
+    - "anthropic.*"
+    - "httpx.*"
+    - "langchain_core.exceptions.*"
+    - "google.api_core.exceptions.*"
+
+- name: litellm
+  calls: ["litellm.completion", "litellm.acompletion"]
+  timeout_kwargs: [timeout, request_timeout]
+  token_limit_kwargs: [max_tokens, max_completion_tokens]
+  retry_kwargs: [num_retries, max_retries]
+  default_retries: 0
+  error_types: ["litellm.*", "openai.*"]
+
+# LiteLLM routes one call shape to many providers (pilot 3, spec 010). Its own retries
+# (`num_retries`) default to off; `max_retries` is forwarded to the provider SDK.
+- name: litellm
+  calls:
+    - "litellm.completion"
+    - "litellm.acompletion"
+    - "litellm.text_completion"
+    - "litellm.atext_completion"
+    - "litellm.Router.completion"
+    - "litellm.Router.acompletion"
+  timeout_kwargs: [timeout, request_timeout]
+  token_limit_kwargs: [max_tokens, max_completion_tokens]
+  retry_kwargs: [num_retries, max_retries]
+  default_retries: 0
+  error_types: ["litellm.*", "openai.*"]

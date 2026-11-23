@@ -1,0 +1,61 @@
+schema_version: 1
+pack:
+  id: codepulse-python-flow-experimental
+  version: "0.1.0"
+rules:
+  - id: E03.request-into-instructions
+    name: Request content may reach high-trust prompt instructions
+    languages: [python]
+    severity: critical
+    detection: heuristic
+    component: llm_call
+    enabled: false
+    match:
+      type: python_flow
+      source_calls:
+        - '(?:^|\.)(?:json|form|body|get_json|read_json)\Z'
+      source_parameters:
+        - '^(?:request|req|user_input|untrusted_input)$'
+      sink_calls:
+        - '(?:^|\.)(?:SystemMessage|SystemMessagePromptTemplate|from_template|system_message)\Z'
+      sanitizer_calls: []
+    message: A value originating from request input may reach an instruction-construction call.
+    remediation: Treat request data as untrusted and keep system instructions independent from it.
+
+  - id: E05.output-to-sink
+    name: LLM output may reach a side-effecting operation
+    languages: [python]
+    severity: critical
+    detection: heuristic
+    component: llm_call
+    enabled: false
+    match:
+      type: python_flow
+      source_calls:
+        - '(?:^|\.)(?:invoke|ainvoke|generate|agenerate|chat\.completions\.create)\Z'
+      source_parameters: []
+      sink_calls:
+        - '(?:^|\.)(?:execute|executemany|eval|exec|write_text|write_bytes|subprocess\.run|Popen)\Z'
+      sanitizer_calls:
+        - '(?:^|\.)(?:model_validate|parse_obj|validate_python)\Z'
+    message: A possible LLM result reaches an operation with external effects.
+    remediation: Validate and authorize model output before using it in downstream sinks.
+
+  - id: E08.vector-query-injection
+    name: Untrusted value may enter vector search filter
+    languages: [python]
+    severity: high
+    detection: heuristic
+    component: database
+    enabled: false
+    match:
+      type: python_flow
+      source_calls:
+        - '(?:^|\.)(?:json|form|query_params|get_json)\Z'
+      source_parameters:
+        - '^(?:request|req|user_input|filter_input)$'
+      sink_calls:
+        - '(?:^|\.)(?:query|search|similarity_search|query_points|scroll)\Z'
+      sanitizer_calls: []
+    message: Request-originated data may reach a vector query without validated filtering.
+    remediation: Validate the filter structure and use the vector database parameterization API.

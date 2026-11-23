@@ -1,0 +1,56 @@
+# External tool rule -> E-series element, and tool severity -> CodePulse severity.
+# `tool` and `code` are globs. First matching rule wins; anything unmapped is E15.
+# Projects extend this under `catalogs: {external_map: [...]}` in codepulse.yaml.
+
+# --- bandit ---
+- {kind: rule, tool: bandit, code: "B608", element: E08}
+- {kind: rule, tool: bandit, code: "B10[567]", element: E11}
+- {kind: rule, tool: bandit, code: "B11[02]", element: E12}
+- {kind: rule, tool: bandit, code: "B113", element: E07}
+- {kind: severity, tool: bandit, raw: HIGH, severity: high}
+- {kind: severity, tool: bandit, raw: MEDIUM, severity: medium}
+- {kind: severity, tool: bandit, raw: LOW, severity: low}
+
+# --- ruff ---
+- {kind: rule, tool: ruff, code: "S608", element: E08}
+- {kind: rule, tool: ruff, code: "S10[567]", element: E11}
+- {kind: rule, tool: ruff, code: "E722", element: E12}
+- {kind: rule, tool: ruff, code: "BLE001", element: E12}
+- {kind: rule, tool: ruff, code: "S11[02]", element: E12}
+- {kind: rule, tool: ruff, code: "ASYNC*", element: E07}
+- {kind: rule, tool: ruff, code: "PGH00[34]", element: E15}
+- {kind: default, tool: ruff, severity: low}
+
+# --- mypy ---
+- {kind: severity, tool: mypy, raw: ERROR, severity: medium}
+- {kind: default, tool: mypy, severity: low}
+
+# --- SARIF producers (semgrep and others): tool is "sarif:<driver name>" ---
+- {kind: rule, tool: "sarif:*", code: "*sql*", element: E08}
+- {kind: rule, tool: "sarif:*", code: "*hardcoded*", element: E11}
+- {kind: rule, tool: "sarif:*", code: "*secret*", element: E11}
+- {kind: severity, tool: "sarif:*", raw: ERROR, severity: high}
+- {kind: severity, tool: "sarif:*", raw: WARNING, severity: medium}
+- {kind: severity, tool: "sarif:*", raw: NOTE, severity: low}
+
+# --- SonarQube (APDD §6.3.3 mapping) ---
+- {kind: rule, tool: sonarqube, code: "python:S2077", element: E08}
+- {kind: rule, tool: sonarqube, code: "python:S2068", element: E11}
+- {kind: rule, tool: sonarqube, code: "python:S6418", element: E11}
+- {kind: rule, tool: sonarqube, code: "python:S5754", element: E12}
+- {kind: rule, tool: sonarqube, code: "python:S1166", element: E12}
+- {kind: rule, tool: sonarqube, code: "python:S2737", element: E12}
+# Pilot 1 (spec 009): rules SonarQube Community Build raised on a FastAPI codebase.
+- {kind: rule, tool: sonarqube, code: "secrets:*", element: E11}          # credentials in code
+- {kind: rule, tool: sonarqube, code: "python:S5332", element: E11}       # clear-text protocol
+- {kind: rule, tool: sonarqube, code: "python:S4830", element: E11}       # TLS verification off
+- {kind: rule, tool: sonarqube, code: "python:S4790", element: E11}       # weak hash
+- {kind: rule, tool: sonarqube, code: "python:S2245", element: E11}       # non-crypto PRNG
+- {kind: rule, tool: sonarqube, code: "python:S7493", element: E07}       # sync file I/O in async
+- {kind: rule, tool: sonarqube, code: "pythonsecurity:S3649", element: E08}  # SQL injection (taint)
+- {kind: rule, tool: sonarqube, code: "pythonsecurity:*", element: E11}
+- {kind: severity, tool: sonarqube, raw: BLOCKER, severity: critical}
+- {kind: severity, tool: sonarqube, raw: CRITICAL, severity: high}
+- {kind: severity, tool: sonarqube, raw: MAJOR, severity: medium}
+- {kind: severity, tool: sonarqube, raw: MINOR, severity: low}
+- {kind: severity, tool: sonarqube, raw: INFO, severity: info}

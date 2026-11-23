@@ -1,0 +1,14 @@
+# What counts as a log call. `call` entries are qualified-name globs; `method` entries are
+# the fallback for unresolved receivers whose name ends in "log"/"logger" (`self.log.info`).
+- call: "logging.*"
+- call: "structlog.*"
+- call: "loguru.*"
+- call: "builtins.print"
+- method: debug
+- method: info
+- method: warning
+- method: warn
+- method: error
+- method: exception
+- method: critical
+- method: log

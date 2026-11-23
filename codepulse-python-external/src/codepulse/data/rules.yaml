@@ -1,0 +1,922 @@
+# Built-in rule metadata. Severity, message templates, remediation, and option defaults
+# live here, never in Python (Constitution Art. V). Bump `version` on any change; the
+# registry version recorded on every run is derived from this file's content.
+#
+# Schema:
+#   rules:
+#     E04:
+#       name: LLM API Call Handling
+#       component: llm_call          # graph_node | llm_call | database | rest_api | other
+#       options: {}                  # defaults shared by every sub-check of the rule
+#       subchecks:
+#         no-timeout:
+#           detection: deterministic # deterministic | heuristic | candidate
+#           severity: high           # critical | high | medium | low | info
+#           message: "Provider call {callee} has no timeout."
+#           remediation: "..."
+#           enabled: true            # optional
+#           options: {}              # optional, overrides rule-level defaults
+
+version: "2026.11.29"
+
+rules:
+  E01:
+    name: LangGraph Node and Graph Design
+    component: graph_node
+    options:
+      max_lines: 40
+      max_branches: 8
+      max_state_writes: 4
+      route_keys: ["next", "next_node", "next_step", "route", "goto"]
+      workflow_classes: &temporal_workflow ["temporalio.workflow.defn"]
+      # Temporal workflow `run` methods orchestrate activities; length is not mixed concerns.
+      orchestrator_decorators: ["temporalio.workflow.run"]
+      # Throwaway graphs, flows and mock activities in tests (spec 013/014).
+      test_paths: &graph_test_paths ["tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py",
+                                     "**/tests.py", "**/conftest.py", "**/*_testing/**",
+                                     "**/*_test/**", "**/testing/**", "**/fixtures/**"]
+      # Calls whose result differs on replay; workflow.now() / workflow.random() / workflow.uuid4()
+      # are the replay-safe forms. LLM provider and blocking calls are added from the catalogs.
+      nondeterministic_calls: ["datetime.datetime.now", "datetime.datetime.utcnow",
+                               "datetime.datetime.today", "datetime.date.today", "time.time",
+                               "time.time_ns", "time.monotonic", "time.perf_counter",
+                               "random.*", "uuid.uuid1", "uuid.uuid4", "os.urandom", "secrets.*"]
+    subchecks:
+      node-responsibility:
+        detection: candidate
+        severity: medium
+        message: "{framework} step '{registered_name}' is large ({length_lines} lines, {branches} branches, writes {state_keys_written}); is it doing more than one job?"
+        remediation: >-
+          Split multi-responsibility nodes so each does one thing, and move routing decisions
+          into conditional edges in the graph builder.
+      routing-in-body:
+        detection: heuristic
+        severity: medium
+        experimental: true
+        message: "Node '{node}' decides the next step itself ('{key}' -> {targets}) with no conditional edge for it."
+        remediation: >-
+          Move the routing decision into add_conditional_edges (a router function over state), or
+          return Command(goto=...) so the graph, not a state key, carries control flow.
+      workflow-nondeterminism:
+        detection: deterministic
+        severity: high
+        message: "{callee} in Temporal workflow {workflow} gives a different result on replay; the workflow can fail with a non-determinism error."
+        remediation: >-
+          Move I/O, LLM and HTTP calls into activities. Use workflow.now(), workflow.random() and
+          workflow.uuid4() for time and randomness inside workflow code.
+
+  E02:
+    name: State Management (LangGraph State)
+    component: graph_node
+    options:
+      accumulating_reducers: ["operator.add", "langgraph.graph.message.add_messages", "langgraph.graph.add_messages"]
+      trim_calls: ["langchain_core.messages.trim_messages", "langchain_core.messages.utils.trim_messages", "langchain_core.messages.RemoveMessage", "langchain_core.messages.modifier.RemoveMessage"]
+      # Throwaway graphs and flows in tests need neither typed state nor logging (spec 013:
+      # crewAI's own test suite raised ~1,250 such findings, all low value).
+      compiled_graphs: ["langgraph.*.compile", "langgraph.prebuilt*.create_react_agent"]
+      graph_run_methods: ["invoke", "ainvoke", "stream", "astream", "astream_events"]
+      workflow_classes: *temporal_workflow
+      # Work that adds history every turn; a loop that only waits for signals does not.
+      workflow_waits: ["temporalio.workflow.execute_*", "temporalio.workflow.start_*",
+                       "temporalio.workflow.sleep", "asyncio.sleep"]
+      continue_as_new: ["temporalio.workflow.continue_as_new"]
+      test_paths: *graph_test_paths
+    subchecks:
+      untyped-state:
+        detection: deterministic
+        severity: high
+        message: "State schema {schema} is untyped; keys and value types are unchecked."
+        remediation: "Define state as a TypedDict, dataclass, or pydantic model with typed keys."
+      multi-writer-no-reducer:
+        detection: heuristic
+        severity: high
+        message: "State key '{key}' is written by nodes {writers}, which can run in the same step, with no Annotated reducer."
+        remediation: >-
+          Declare a merge strategy with Annotated[T, reducer] for keys written by more than one
+          node, or give each key a single owner.
+      state-lifecycle:
+        detection: candidate
+        severity: medium
+        message: "Node '{node}' overwrites state key(s) {keys} that nodes in other modules also write ({other_writers}); is each overwrite intended?"
+        remediation: >-
+          Give each state key one owning node, or document the hand-off (who writes it, who may
+          overwrite it, and when) and add a reducer if values should merge.
+      unbounded-accumulation:
+        detection: heuristic
+        severity: high
+        message: "State key '{key}' accumulates via {reducer} in a graph that loops or checkpoints, and nothing trims it."
+        remediation: >-
+          Bound the key: trim with trim_messages / RemoveMessage, keep a window
+          (state["messages"][-N:]), or summarize old entries.
+      shared-thread-id:
+        detection: deterministic
+        severity: high
+        experimental: true
+        message: "{callee} runs with a constant thread_id ({thread}); every caller shares one conversation and checkpoint."
+        remediation: >-
+          Derive thread_id from the user or session (config={"configurable": {"thread_id":
+          session_id}}), so each conversation keeps its own history and nobody sees another's.
+      workflow-history-unbounded:
+        detection: heuristic
+        severity: high
+        experimental: true
+        message: "Workflow {workflow} loops over activities or timers and never calls continue_as_new; its history grows until Temporal terminates the run."
+        remediation: >-
+          Call workflow.continue_as_new(...) when workflow.info().is_continue_as_new_suggested()
+          (or after N turns), carrying the state the next run needs.
+      unbounded-agent-loop:
+        detection: deterministic
+        severity: high
+        experimental: true
+        message: "{callee} runs agents in a loop with no stop condition ({caps} not set); it can run, and spend, without limit."
+        remediation: >-
+          Give every agent loop a hard stop: LoopAgent(max_iterations=N), a team
+          termination_condition (MaxMessageTermination | TextMentionTermination) or max_turns,
+          a Workflow timeout. Keep the model-driven exit as well, not instead.
+
+  E03:
+    name: Prompt Management
+    component: llm_call
+    options:
+      min_len: 200
+      prompt_modules: ["**/prompts.py", "**/prompts/**", "prompts.py", "**/*_prompts.py",
+                       "**/*_prompt.py", "**/prompt_*.py", "**/*prompt*/*.py",
+                       "**/*prompt*/**/*.py"]  # directories only: util/prompt.py is code
+      data_roles: ["user", "tool", "function"]
+      prompt_name_pattern: "(?i)(?:prompt|instruction|system_message|system_msg)s?$"
+      message_keys: ["content", "text", "system", "prompt", "instructions"]
+      message_calls: ["langchain_core.messages.*Message", "langchain.schema.*Message",
+                      "langchain_core.prompts.*", "langchain.prompts.*"]
+      sensitive_name_pattern: "(?i)(?:password|passwd|secret|token|api_?key|credential|ssn|social_security|credit_?card|card_?number|cvv|account_?number|iban|private_?key)"
+      # Prompt injection (spec 017): the instruction turn, what feeds it, and what is untrusted.
+      instruction_roles: ["system", "developer"]
+      content_keys: ["content", "text"]
+      instruction_kwargs: ["system", "instructions"]
+      # HTTP / handler input: untrusted by default. Globs over the resolved qualified name or
+      # the bare dotted path (call args dropped): request.args.get(x) -> request.args.get. Named
+      # by the specific request attribute, not a bare `request.*`, so a dataclass that merely
+      # happens to be called `request` (e.g. a SemanticRequest) is not mistaken for HTTP input.
+      request_sources: ["request.args*", "request.form*", "request.values*", "request.json*",
+                        "request.get_json*", "request.data", "request.body", "request.files*",
+                        "request.cookies*", "request.query_params*", "request.path_params*",
+                        "request.headers*", "request.GET*", "request.POST*",
+                        "*.request.args*", "*.request.form*", "*.request.json*",
+                        "*.request.get_json*", "*.request.query_params*", "*.request.headers*",
+                        "*.args.get", "*.form.get", "*.get_json", "*.query_params.get",
+                        "*.path_params.get"]
+      # Retrieved documents and tool output: the indirect-injection surface, experimental for now.
+      # Includes vector-DB query methods (spec 020). Distinctive method names are matched as `*.`;
+      # the generic `.query`/`.search` are matched only when the import map resolves the receiver
+      # to the vector-DB client, so bare `.query`/`.search` elsewhere is not treated as retrieval.
+      retrieval_sources: ["*.get_relevant_documents", "*.aget_relevant_documents",
+                         "*.similarity_search", "*.similarity_search_with_score",
+                         "*.similarity_search_by_vector", "*.asimilarity_search",
+                         "*.asimilarity_search_with_score",
+                         "*.max_marginal_relevance_search", "*.retrieve", "*.aretrieve",
+                         "*retriever*.invoke", "*.as_retriever",
+                         "*.query_points", "*.search_points",          # Qdrant
+                         "*.near_text", "*.near_vector", "*.hybrid",    # Weaviate
+                         "pinecone*.query", "*.Index.query",            # Pinecone
+                         "chromadb*.query", "*.Collection.query",       # Chroma
+                         "pymilvus*.search", "*.Collection.search"]     # Milvus
+      validator_methods: ["model_validate", "model_validate_json", "parse_obj", "parse_raw",
+                          "validate_python", "validate_json"]
+      validator_calls: ["jsonschema.validate", "pydantic.TypeAdapter*", "pydantic.parse_obj_as"]
+    subchecks:
+      inline-long-prompt:
+        detection: heuristic
+        severity: medium
+        message: "Inline prompt text ({length} chars) in {slot}."
+        remediation: >-
+          Move prompt bodies to versioned templates loaded at startup and record the
+          template version with each model call.
+      interpolated-prompt:
+        detection: heuristic
+        severity: medium
+        message: "Prompt text in {slot} is assembled with f-string, concatenation, or format."
+        remediation: >-
+          Render prompts from a versioned template with named, validated variables so the
+          exact prompt version is reproducible and reviewable.
+      sensitive-interpolation:
+        detection: heuristic
+        severity: high
+        message: "Sensitive value '{name}' is interpolated into prompt text."
+        remediation: >-
+          Never send credentials or regulated identifiers to a model. Pass an opaque
+          reference or a redacted form instead.
+      request-into-instructions:
+        detection: heuristic
+        severity: critical
+        message: "{source} reaches the system/developer turn: the instruction context can be overridden (prompt injection)."
+        remediation: >-
+          Keep request input in the user turn, never the system/developer turn. Put fixed
+          instructions in the system prompt and pass user-supplied text as user-role content;
+          validate or constrain it (allow-list, schema) before use.
+      untrusted-into-instructions:
+        detection: candidate
+        severity: high
+        experimental: true
+        message: "{source} reaches the system/developer turn near line {sink_line}; is it confined to data, or can it steer the agent's instructions (indirect injection)?"
+        remediation: >-
+          Treat retrieved documents and tool output as data, not instructions: place them in the
+          user turn, delimit them clearly, and do not let them define the system prompt. Validate
+          or sandbox tool output before it influences control flow.
+      external-prompt-into-instructions:
+        detection: heuristic
+        # medium, not high: externalising prompts is a legitimate, common pattern, not directly
+        # attacker-triggerable (unlike request-/untrusted-into-instructions). It is an integrity /
+        # governance concern whose real risk lives in the store's access controls, which static
+        # analysis cannot see. The remediation is process (pin, review-like-code, fallback).
+        severity: medium
+        message: "The system/developer prompt is fetched from an external store, outside the repository and version control."
+        remediation: >-
+          Pin the prompt version, review changes like code, and set a timeout and an in-repo
+          fallback on the fetch so an unavailable or altered remote prompt cannot break or hijack
+          the agent.
+
+  E04:
+    name: LLM API Call Handling
+    component: llm_call
+    options:
+      # Strict by default (owner decision 2026-11-01): only an explicit retry policy counts.
+      # true = SDK built-in retries (e.g. OpenAI's 2) count as a retry layer.
+      count_sdk_default_retries: false
+      retry_decorators: ["tenacity.retry", "backoff.on_exception", "backoff.on_predicate",
+                         "retrying.retry", "stamina.retry", "retry.retry"]
+      retry_methods: ["with_retry"]
+      retry_iterators: ["tenacity.Retrying", "tenacity.AsyncRetrying", "stamina.retry_context"]
+      retry_loop_names: "(?i)(?:attempt|retr|tries|tri(?:al|es)?$)"   # for attempt in range(n): try ...
+      classifying_types: ["builtins.TimeoutError", "asyncio.TimeoutError", "httpx.*",
+                          "requests.exceptions.*"]
+      activity_decorators: ["temporalio.activity.defn"]
+      activity_runs: ["temporalio.workflow.execute_activity", "temporalio.workflow.start_activity",
+                      "temporalio.workflow.execute_local_activity",
+                      "temporalio.workflow.start_local_activity",
+                      "temporalio.workflow.execute_activity_method",
+                      "temporalio.workflow.start_activity_method"]
+    subchecks:
+      activity-unbounded-retry:
+        detection: heuristic
+        severity: high
+        experimental: true
+        message: "Activity {activity} calls an LLM and runs with Temporal's default unlimited retries ({why}); a failing paid call is repeated without end."
+        remediation: >-
+          Pass retry_policy=RetryPolicy(maximum_attempts=N, non_retryable_error_types=[...]) for
+          activities that call a model, and classify errors that retrying cannot fix.
+      no-timeout:
+        detection: deterministic
+        severity: high
+        message: "{callee} ({provider}) has no timeout on the call, its receiver chain, or its client."
+        remediation: >-
+          Set an explicit timeout on the client (e.g. OpenAI(timeout=30)) or per call. Without
+          one, a stalled provider holds the worker until the transport gives up.
+      no-retry:
+        detection: deterministic
+        severity: high
+        message: "{callee} ({provider}) has no retry layer: SDK retries are disabled and no application retry encloses it."
+        remediation: >-
+          Use exactly one retry layer: either keep SDK retries (max_retries > 0) or wrap the
+          call in an application retry with exponential backoff and jitter, classifying
+          failures as retryable or terminal first.
+      nested-retry:
+        detection: deterministic
+        severity: high
+        message: "{callee} ({provider}) is retried by an application layer on top of {retries} SDK retries; attempts multiply."
+        remediation: >-
+          Pick one authoritative retry layer. Set max_retries=0 on the client when an
+          application retry policy owns retries, or drop the application retry.
+      unclassified-failure:
+        detection: deterministic
+        severity: high
+        message: "Failures of {callee} ({provider}) are caught only by {handler}; retryable and terminal errors are not distinguished."
+        remediation: >-
+          Catch the provider's specific errors (rate limit, timeout, connection) separately
+          from terminal ones, record a classified failure, and let unknown errors propagate.
+
+  E05:
+    name: Hallucination and Output Validation Guardrails
+    component: llm_call
+    options:
+      validator_methods: &validator_methods ["model_validate", "model_validate_json", "parse_obj", "parse_raw",
+                          "validate_python", "validate_json"]
+      validator_calls: &validator_calls ["jsonschema.validate", "pydantic.TypeAdapter*", "pydantic.parse_obj_as"]
+      orm_write_methods: &orm_write_methods ["add", "add_all", "merge", "bulk_save_objects", "bulk_insert_mappings"]
+      outbound_calls: &outbound_calls ["requests.post", "requests.put", "requests.patch", "requests.Session.post",
+                       "httpx.post", "httpx.put", "httpx.patch", "httpx.*Client.post",
+                       "httpx.*Client.put", "subprocess.*", "os.system"]
+      # Code-execution sinks: model output reaching one of these runs as code (spec 015).
+      # The worst boundary crossing — untrusted text becomes executed code with live scope.
+      code_exec_sinks: &code_exec_sinks ["builtins.eval", "builtins.exec", "builtins.compile", "os.popen",
+                        "os.popen2", "os.popen3", "pickle.loads", "pickle.load"]
+      parse_calls: ["json.loads", "orjson.loads", "ujson.loads", "*.output_parsers.*.parse",
+                    "*.output_parsers.*.invoke"]
+      structured_methods: ["with_structured_output", "parse"]
+      parse_errors: ["pydantic.ValidationError", "pydantic_core.ValidationError",
+                     "pydantic.v1.ValidationError", "json.JSONDecodeError", "builtins.ValueError",
+                     "langchain_core.exceptions.OutputParserException",
+                     "openai.LengthFinishReasonError", "openai.ContentFilterFinishReasonError"]
+      message_keys: ["messages", "chat_history", "history"]
+      handled_by_chain: ["with_retry", "with_fallbacks"]
+    subchecks:
+      output-to-sink:
+        detection: heuristic
+        severity: critical
+        message: "Model output '{source}' reaches {sink} with no validation in between."
+        remediation: >-
+          Parse model output into a validated schema (e.g. Model.model_validate_json) and act only
+          on the validated object. On failure, use the fallback ladder: strict parse, salvage,
+          then an empty result carrying a recorded failure marker.
+      guardrail-substance:
+        detection: candidate
+        severity: high
+        message: "Validated model output reaches {sink}; is the validation substantive or cosmetic?"
+        remediation: "Validate structure and values (required fields, ranges, allow-lists), not just presence."
+      unparsed-output:
+        detection: deterministic
+        severity: high
+        message: "Output of {callee} reaches '{key}' without a schema parse; downstream code acts on free text."
+        remediation: >-
+          Parse model output into a schema before it enters state or a response: use
+          with_structured_output / responses.parse, or model_validate_json on the content.
+      structured-no-handler:
+        detection: deterministic
+        severity: high
+        message: "Structured-output call {callee} is not guarded for a failed parse (ValidationError / OutputParserException)."
+        remediation: >-
+          Catch the parse/validation exception and retry, fall back, or record the failure, or
+          pass include_raw=True and inspect parsing_error.
+      agent-output-parsed-by-hand:
+        detection: deterministic
+        severity: medium
+        experimental: true
+        message: "Free-text agent output {source} ({framework}) is parsed by hand with {parser}."
+        remediation: >-
+          Ask the framework for structured output and act on the validated object:
+          Task(output_pydantic=Model) in CrewAI, Agent(output_type=Model) in the OpenAI Agents
+          SDK and PydanticAI, output_schema= in Google ADK.
+
+  E06:
+    name: Token Usage and Cost Controls
+    component: llm_call
+    options:
+      history_name_pattern: "(?i)(?:^|_)(?:messages|history|chat_history|conversation|transcript|turns|memory)$"
+      truncation_calls: ["langchain_core.messages.trim_messages", "langchain_core.messages.utils.trim_messages"]
+      min_len: 200
+    subchecks:
+      no-output-limit:
+        detection: deterministic
+        severity: medium
+        message: "{callee} ({provider}) sets no output-token limit."
+        remediation: "Cap output explicitly (max_tokens / max_completion_tokens) sized to the expected answer."
+      unbounded-history:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: medium
+        message: "{name} grows inside a loop with no truncation; context and cost grow with every turn."
+        remediation: >-
+          Bound the history: keep a sliding window (history[-N:]), trim by token count
+          (trim_messages), summarize old turns, or use deque(maxlen=N).
+      invariant-in-loop:
+        detection: heuristic
+        severity: medium
+        experimental: true
+        message: "'{name}' is bound before the loop and resent unchanged to {callee} on every iteration."
+        remediation: >-
+          Send large invariant context once (summarize it, or use provider prompt caching), or
+          hoist the call out of the loop and batch the per-item inputs.
+      no-usage-capture:
+        detection: heuristic
+        severity: low
+        experimental: true
+        message: "Token usage of {callee} is never read from '{name}'; cost is invisible per call."
+        remediation: >-
+          Record response.usage (or usage_metadata) per call, or attach a callback/tracer that
+          captures it, so cost can be attributed and budgeted.
+
+  E07:
+    name: Async and Concurrency Correctness
+    component: other
+    options:
+      future_result_calls: ["concurrent.futures.*Executor.submit.result"]
+      # Spawners whose task the event loop only weakly references (TaskGroup keeps its own).
+      task_spawners: ["asyncio.create_task", "asyncio.ensure_future",
+                      "asyncio.get_running_loop.create_task", "asyncio.get_event_loop.create_task",
+                      "asyncio.new_event_loop.create_task"]
+      wait_calls:
+        - {call: "concurrent.futures.as_completed", timeout_position: 1}
+        - {call: "concurrent.futures.wait", timeout_position: 1}
+      pools:
+        - {call: "concurrent.futures.ThreadPoolExecutor", size_kwarg: max_workers}
+        - {call: "concurrent.futures.ProcessPoolExecutor", size_kwarg: max_workers}
+        - {call: "multiprocessing.Pool", size_kwarg: processes}
+        - {call: "multiprocessing.pool.ThreadPool", size_kwarg: processes}
+      submit_calls: ["concurrent.futures.*Executor.submit", "asyncio.create_task",
+                     "asyncio.TaskGroup.create_task"]
+      gate_name_pattern: "(?i)(?:^|[._])(?:sem|semaphore|limiter|throttle|concurrency_limit)\\w*$"
+      semaphores: ["asyncio.Semaphore", "asyncio.BoundedSemaphore", "threading.Semaphore",
+                   "threading.BoundedSemaphore", "anyio.Semaphore", "anyio.CapacityLimiter"]
+      thread_targets: ["threading.Thread", "multiprocessing.Process"]
+    subchecks:
+      blocking-in-async:
+        detection: deterministic
+        severity: high
+        message: "Blocking call {callee} inside async def stalls the event loop."
+        remediation: >-
+          Use the async equivalent (asyncio.sleep, httpx.AsyncClient, aiofiles) or move the
+          call off the loop with await asyncio.to_thread(...).
+      result-no-timeout:
+        detection: deterministic
+        severity: high
+        message: "{callee} waits with no timeout; one hung task blocks the caller forever."
+        remediation: "Pass an explicit timeout, e.g. future.result(timeout=60), and handle TimeoutError."
+      pool-no-max-workers:
+        detection: heuristic
+        severity: low
+        message: "{callee}() relies on default sizing; set {kwarg} explicitly."
+        remediation: >-
+          Size worker pools from configuration so capacity is a deliberate, reviewable
+          decision rather than a function of the host's CPU count.
+      unbounded-submit:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: medium
+        message: "{callee} inside a loop with no capacity gate; queued work grows with input size."
+        remediation: >-
+          Gate submission with a bounded semaphore (with sem: ...) or submit in fixed-size
+          batches, and reject explicitly at saturation.
+      contextvar-no-copy:
+        detection: deterministic
+        severity: high
+        message: "{callee} runs {fn}, which reads ContextVar {var}, in another thread without copy_context()."
+        remediation: >-
+          Submit contextvars.copy_context().run(fn, ...) so the worker sees the caller's context
+          (request id, tenant, trace), or pass the values explicitly.
+      unreferenced-task:
+        detection: deterministic
+        severity: medium
+        message: "Task from {callee} is not kept; it can be garbage-collected before it finishes, and its exception is never seen."
+        remediation: >-
+          Keep a reference until the task is done (a module-level set plus
+          task.add_done_callback(tasks.discard)), await it, or use asyncio.TaskGroup.
+
+  E08:
+    name: Query Safety (SQL and vector-store DSLs)
+    component: database
+    options:
+      autocommit_drivers: ["asyncpg."]
+      # Vector-store query DSLs (spec 020). Milvus carries the filter in an `expr=` kwarg on these
+      # methods; a Weaviate raw-GraphQL call's receiver path ends with one of these suffixes.
+      vector_expr_methods: ["search", "query", "hybrid_search"]
+      vector_graphql_suffixes: [".query.raw", ".graphql_raw_query"]
+      # Tests, fixtures and schema migrations build SQL from code-owned names, not input.
+      ignore_paths: ["tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py", "**/tests.py",
+                     "**/conftest.py", "**/*_testing/**", "**/*_test/**", "**/testing/**",
+                     "**/fixtures/**", "**/fixture.py", "**/*testdata*",
+                     "**/alembic/versions/**", "**/migrations/**"]
+    subchecks:
+      interpolated-sql:
+        detection: deterministic
+        severity: critical
+        message: "SQL passed to {sink} is built from non-literal values (f-string, concatenation, % or .format)."
+        remediation: >-
+          Use bound parameters (text("... WHERE id = :id") with params, or the driver's %s
+          placeholders) or the ORM query API. Never interpolate values into SQL text.
+      interpolated-identifier:
+        detection: heuristic
+        severity: medium
+        message: "SQL passed to {sink} interpolates a table, column or schema name; values are not interpolated."
+        remediation: >-
+          Identifiers cannot be bound parameters. Make sure the name comes from code or is
+          checked against an allow-list (or quoted with sql.Identifier / quote_ident) before it
+          reaches the statement; never take it from request input unchecked.
+      sql-keyword-literal:
+        detection: heuristic
+        severity: critical
+        message: "SQL statement assembled from non-literal values; confirm it is never executed with interpolated input."
+        remediation: >-
+          Build the statement with bound parameters and pass values separately to the
+          driver. If identifiers must vary, validate them against an allow-list.
+      multi-write-no-txn:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: high
+        message: "{count} SQL writes in one function are not in one transaction ({why}); a failure between them leaves partial state."
+        remediation: >-
+          Wrap related writes in one transaction (with engine.begin(), async with
+          conn.transaction(), with conn: for psycopg) and commit once at the end.
+      vector-query-injection:
+        detection: heuristic
+        severity: high
+        message: "Vector-store query ({store}) is built from non-literal values; untrusted input can alter the filter."
+        remediation: >-
+          Build the filter from fixed templates with bound or validated values; never interpolate
+          user or retrieved text into a Milvus expr or a raw GraphQL query string.
+
+  E09:
+    name: DB Connection Management
+    component: database
+    options:
+      acquire_calls: ["sqlalchemy.orm.Session", "sqlalchemy.orm.session.Session",
+                      "sqlalchemy.ext.asyncio.AsyncSession",
+                      "sqlalchemy.create_engine.connect", "sqlalchemy.create_engine.begin",
+                      "sqlalchemy.ext.asyncio.create_async_engine.connect",
+                      "sqlalchemy.ext.asyncio.create_async_engine.begin",
+                      "psycopg2.connect", "psycopg.connect", "asyncpg.connect",
+                      "sqlite3.connect", "pymysql.connect"]
+      session_factories: ["sqlalchemy.orm.sessionmaker", "sqlalchemy.orm.scoped_session",
+                          "sqlalchemy.ext.asyncio.async_sessionmaker"]
+      engine_calls: ["sqlalchemy.create_engine", "sqlalchemy.ext.asyncio.create_async_engine"]
+      closers: ["contextlib.closing"]
+      # Test code outside tests/ too: conftest, *_testing/ and *_test/ packages, fixtures
+      # (classification check, 2026-11-01).
+      ignore_paths: ["tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py", "**/tests.py",
+                     "**/conftest.py", "**/*_testing/**", "**/*_test/**", "**/testing/**",
+                     "**/fixtures/**", "**/fixture.py", "**/*testdata*"]
+      txn_receivers: ["sqlalchemy.*", "psycopg*", "asyncpg.*"]
+      txn_receiver_pattern: "(?i)(?:^|[._])(?:conn|connection|session|db|engine|tx|txn|cursor|cur)$"
+    subchecks:
+      acquire-outside-with:
+        detection: deterministic
+        severity: high
+        message: "{callee}() acquires a session/connection outside a context manager; it leaks on error."
+        remediation: >-
+          Acquire with a context manager (with Session(engine) as s: / with engine.connect()
+          as c:) or close it in a finally block.
+      acquire-in-loop:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: deterministic
+        severity: high
+        message: "{callee}() acquires a session/connection on every loop iteration."
+        remediation: "Acquire once outside the loop and reuse it, or batch the work."
+      no-pool-size:
+        detection: deterministic
+        severity: medium
+        message: "{callee}() relies on default pool sizing."
+        remediation: "Set pool_size and max_overflow explicitly from configuration."
+      txn-no-rollback:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: high
+        message: "{begin} starts a transaction outside a context manager and no failure path rolls it back."
+        remediation: >-
+          Use the transaction as a context manager (with conn.begin():), or roll back in an
+          except/finally block so a failed write does not leave the connection mid-transaction.
+
+  E10:
+    name: REST API Design and Validation
+    component: rest_api
+    options:
+      raw_body_calls: ["fastapi.Request.json", "fastapi.Request.body", "fastapi.Request.form",
+                       "starlette.requests.Request.json", "starlette.requests.Request.body",
+                       "starlette.requests.Request.form", "flask.request.get_json",
+                       "flask.request.get_data"]
+      raw_body_attributes: ["flask.request.json", "flask.request.form", "flask.request.data",
+                            "flask.request.values"]
+      auth_name_pattern: "(?i)(?:auth|current_?\\w*user|get_user|verif(?:y|ied)|require|permission|principal|token|api_?key|login|jwt|oauth|security|admin_user)"
+      # `user: CurrentActiveUser` where the alias is Annotated[User, Depends(...)] elsewhere
+      auth_annotation_pattern: "^(?:Current\\w*User|Authenticated\\w*|\\w*UserDep|AuthUser|Verified\\w*User)$"
+      public_path_pattern: "^/?(?:health|healthz|ready|readyz|live|livez|ping|status|metrics|docs|redoc|openapi\\.json|favicon\\.ico|login|logout|token|refresh|register|signup|sign-up|forgot-password|reset-password|unsubscribe|callback)?/?$"
+      # Auth-flow endpoints are public by nature; a router named `public` declares it.
+      public_receiver_pattern: "(?i)(?:^|[._])public(?:_\\w+)?$"
+    subchecks:
+      unvalidated-body:
+        detection: deterministic
+        severity: high
+        message: "Route handler reads the raw request body via {access} without a validating model."
+        remediation: "Declare a pydantic request model parameter (FastAPI) or validate with a schema before use."
+      no-auth-declared:
+        detection: heuristic
+        severity: high
+        message: "{method} {path} declares no authentication dependency or decorator."
+        remediation: >-
+          Declare authentication explicitly per route (Depends(get_current_user), Security(...),
+          or router-level dependencies), or add the path to public_path_pattern if it is public.
+      success-on-failure:
+        detection: heuristic
+        severity: medium
+        message: "Route returns a success-shaped response from an except path."
+        remediation: "Return an error status (HTTPException / JSONResponse(status_code=...)) on failure paths."
+      status-semantics:
+        detection: candidate
+        severity: medium
+        message: "{method} {path} has {return_paths} return and {raise_paths} raise paths; do the status codes match each path?"
+        remediation: "Align status codes with operation semantics (201 create, 404 missing, 409 conflict, 502 upstream)."
+
+  E11:
+    name: Authentication and Authorization
+    component: other
+    options:
+      # Test code outside tests/ too: conftest, *_testing/ and *_test/ packages, fixtures
+      # (classification check, 2026-11-01).
+      ignore_paths: ["tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py", "**/tests.py",
+                     "**/conftest.py", "**/*_testing/**", "**/*_test/**", "**/testing/**",
+                     "**/fixtures/**", "**/fixture.py", "**/*testdata*"]
+      secret_name_pattern: "(?i)(?:^|_)(?:api_?key|apikey|secret(?:_?key)?|client_?secret|password|passwd|pwd|token|access_?token|auth_?token|refresh_?token|private_?key|access_?key)(?:$|_)"
+      # Suffixes that name a slot, not a credential; plus tokenizer special-token fields
+      # (bos/eos/pad/start/... _token(s)) that pervade AI/ML code and are parse markers, not
+      # auth tokens -- while auth_token / access_token / refresh_token still match as secrets.
+      non_secret_name_pattern: "(?i)(?:_(?:env|var|name|field|header|url|uri|path|file|type|len|length|count|prefix|pattern|regex|placeholder|sentinel)$|(?:^|_)(?:bos|eos|sos|pad|unk|sep|cls|mask|eot|eod|start|end|stop|begin|special|added)_tokens?$)"
+      # A whole value that is only an env / shell / template reference (${VAR}, $(VAR), {token},
+      # {{ x }}). A long high-entropy value that merely starts with $ or { is NOT one (spec 015).
+      interpolation_pattern: "^(?:\\$\\{?[\\w.-]+\\}?|\\$\\([\\w.-]+\\)|\\{\\{?\\s*[\\w.|'\"/ -]+\\s*\\}?\\})$"
+      placeholder_pattern: "(?i)^(?:<[^>]*>|x{3,}|\\*{3,}|changeme|change[-_]me|placeholder|dummy|example|redacted|todo|none|null|your[-_ ].*|(?:dev|test|local)[-_]only[-_ ].*|.*[-_]change[-_]?me)$"
+      min_secret_length: 8
+      # Value shapes that are not secrets (20-repo benchmark, 2026-11-01).
+      # Fill-in markers and local-server stand-ins (spec 014): "serp-api-here", "lm-studio",
+      # "EMPTY" (vLLM), "unresolved-api-key", "not-needed".
+      placeholder_word_pattern: "(?i)dummy|example|placeholder|redacted|fake|sample|x{4,}|no[-_]key|your[-_ ]|todo|[-_ ]here$|not[-_ ]?set|unset|to[-_ ]?be[-_ ]?set|credentials?|^(?:lm[-_]studio|ollama|empty|none|null|not[-_]needed|unresolved[-_][\\w-]+)$"
+      public_key_pattern: "^(?:phc_|pk_(?:live|test)_)"  # PostHog / Stripe publishable keys ship to browsers
+      hash_pattern: "^\\$(?:2[aby]?|argon2(?:id|i|d)|pbkdf2[-\\w]*|scrypt)\\$"  # password hashes, not secrets
+      public_id_pattern: "^(?:chatcmpl-|msg_|run_|asst_|thread_)"  # sample API response ids
+      entropy_threshold: 4.5
+      entropy_min_length: 24
+      entropy_min_run: 16
+      model_id_like: "(?i)(?:claude|gpt|gemini|llama|mistral|titan|command|o[1-9])[\\w.-]*?-(?:\\d{8}|\\d{4}-\\d{2}-\\d{2}|v\\d)"
+      token_prefix_pattern: "^(?:sk-[A-Za-z0-9_-]{16,}|sk-ant-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})"
+      pattern_calls: ["re.*", "regex.*", "fnmatch.*", "glob.*"]
+      cors_kwargs: ["allow_origins", "origins", "allow_origin", "cors_allowed_origins"]
+      cors_allow_all_settings: ["CORS_ALLOW_ALL_ORIGINS", "CORS_ORIGIN_ALLOW_ALL"]
+      # flask-cors allows every origin unless origins/resources are given (spec 011)
+      cors_default_open_calls: ["flask_cors.CORS", "flask_cors.cross_origin"]
+      cors_header: "access-control-allow-origin"
+      config_modules: ["**/config.py", "**/settings.py", "**/config/**", "**/settings/**", "**/conf.py"]
+      # Reserved hosts (localhost, RFC 2606 example domains) and URLs with credentials
+      # (E11.credentials-in-url owns those) are not configuration endpoints.
+      url_pattern: "^https?://(?![^/@\\s]*:[^/@\\s]*@)(?!(?:localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|(?:[\\w-]+\\.)*example\\.(?:com|org|net))(?:[:/]|$))[^\\s]+$"
+      dsn_pattern: "^(?:postgres(?:ql)?|mysql|mariadb|redis|rediss|mongodb(?:\\+srv)?|amqp)(?:\\+\\w+)?://(?![^/@\\s]*:[^/@\\s]*@)"
+      model_id_pattern: "^(?:gpt-|o[1-9](?:-|$)|claude-|gemini-|text-embedding-|mistral-|llama-?\\d|command-r)"
+      endpoint_kwargs: ["url", "base_url", "api_base", "endpoint", "azure_endpoint", "host", "dsn", "model", "model_name", "deployment_name"]
+      endpoint_name_pattern: "(?i)(?:^|_)(?:url|uri|endpoint|host|dsn|model|model_name|base_url|api_base)$"
+      default_name_pattern: "(?i)^_?default_"
+    subchecks:
+      hardcoded-secret:
+        detection: heuristic
+        severity: critical
+        message: "{name} is assigned a hardcoded secret literal."
+        remediation: >-
+          Resolve secrets from the secret store or environment at startup
+          (os.environ["..."] / settings). Rotate any value that has been committed.
+      high-entropy-literal:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: high
+        message: "High-entropy or token-shaped string literal ({length} chars) may be a credential."
+        remediation: "Move credentials to the secret store. If this is not a secret, suppress with a justification."
+      credentials-in-url:
+        detection: deterministic
+        severity: critical
+        message: "{scheme} URL literal embeds a username and password."
+        remediation: "Build connection URLs from configuration; keep the password in the secret store."
+      wildcard-cors:
+        detection: deterministic
+        severity: high
+        message: "{setting} allows every origin."
+        remediation: "Restrict cross-origin access to a configured allow-list of origins."
+      hardcoded-endpoint:
+        detection: heuristic
+        severity: medium
+        experimental: true
+        message: "{kind} literal in '{slot}' is hardcoded outside configuration."
+        remediation: >-
+          Read endpoints, DSNs, and model ids from settings or the environment so each
+          environment can change them without a code change.
+
+  E12:
+    name: Error Handling and Resilience
+    component: other
+    options:
+      allowed_swallow: ["builtins.ImportError", "builtins.ModuleNotFoundError"]
+      validator_methods: *validator_methods
+      validator_calls: *validator_calls
+      orm_write_methods: *orm_write_methods
+      outbound_calls: *outbound_calls
+      code_exec_sinks: *code_exec_sinks
+      write_methods: ["write", "write_text", "write_bytes", "add_all", "bulk_save_objects", "put_object", "upload_fileobj"]
+      write_calls: ["json.dump", "pickle.dump", "yaml.dump", "yaml.safe_dump"]
+    subchecks:
+      bare-except:
+        detection: deterministic
+        severity: high
+        message: "Bare except catches everything, including KeyboardInterrupt and SystemExit."
+        remediation: "Catch the specific exceptions this block can handle and classify them."
+      raise-non-exception:
+        detection: deterministic
+        severity: high
+        message: "raise {expr} raises TypeError in Python 3; the intended error and message are lost."
+        remediation: "Raise an exception instance: raise ValueError(msg)."
+      swallow:
+        detection: deterministic
+        severity: high
+        message: "Handler for {types} discards the exception without any record."
+        remediation: >-
+          Handle the failure: re-raise a typed error, record a structured failure with a
+          correlation id, or perform a defined fallback the caller can observe.
+      log-and-continue:
+        detection: heuristic
+        severity: medium
+        message: "Handler for {types} only logs and continues; the caller cannot tell the work failed."
+        remediation: >-
+          After logging, re-raise, return an explicit failure result, or record the failure
+          in state so downstream steps and metrics see it.
+      default-on-failure:
+        detection: heuristic
+        severity: high
+        message: "Broad handler for {types} returns {value}; failure is indistinguishable from an empty result."
+        remediation: >-
+          Return an explicit failure marker or raise. If an empty result is a valid fallback,
+          record the failure (with a correlation id) before returning it.
+      handler-substance:
+        detection: candidate
+        severity: high
+        message: "Broad handler for {caught} does {handler_actions}; does it handle the failure or suppress it?"
+        remediation: >-
+          Handle the failure explicitly: classify it, record a structured failure with a
+          correlation id, and give the caller an observable fallback or error.
+      silent-success:
+        detection: heuristic
+        severity: high
+        experimental: true
+        message: "'{name}' (filtered or generated output) is persisted via {sink} without checking it meets expectations."
+        remediation: >-
+          Check the result before persisting it (non-empty, expected count, required fields
+          present) and record a failure instead of storing an empty or partial result as success.
+
+  E13:
+    name: Logging and Observability
+    component: other
+    options:
+      # Tracing configured by environment (LANGSMITH_TRACING=true) is invisible to static
+      # analysis: set true when the deployment traces every run (pilot 2, spec 009).
+      external_tracing: false
+      tracing_decorators: ["langsmith.traceable", "langsmith.run_helpers.traceable",
+                           "langfuse.decorators.observe", "langfuse.observe"]
+      sensitive_name_pattern: "(?i)(?:^|_)(?:password|passwd|secret|token|api_?key|apikey|credential|credentials|ssn|credit_?card|card_?number|cvv|private_?key|prompt|completion|request_body|payload)$"
+      correlation_pattern: "(?i)(?:request|correlation|trace|run|thread|session|span)_?id$"
+      context_binders: ["structlog.contextvars.bind_contextvars", "structlog.contextvars.bound_contextvars", "logging.LoggerAdapter"]
+      # Loggers that attach workflow / run / activity ids to every record themselves.
+      correlated_loggers: ["temporalio.workflow.logger.*", "temporalio.activity.logger.*"]
+      trace_kwargs: ["config", "callbacks", "metadata", "tags", "extra_headers", "user"]
+      test_paths: *graph_test_paths
+    subchecks:
+      sensitive-in-log:
+        detection: heuristic
+        severity: high
+        message: "Log call includes '{name}', which may carry sensitive data or full payloads."
+        remediation: "Redact at the log boundary: log identifiers and sizes, never credentials or full prompts/responses."
+      node-no-logging:
+        detection: heuristic
+        severity: low
+        message: "Graph node '{node}' emits no log events and the graph has no callbacks."
+        remediation: >-
+          Add a callback-based stage logger at the orchestration layer (callbacks on
+          invoke/compile) rather than instrumenting each node, and propagate a correlation id.
+      no-correlation-id:
+        detection: heuristic
+        severity: medium
+        experimental: true
+        message: "Logs in {unit} carry no correlation id; its lines cannot be tied to one request or run."
+        remediation: >-
+          Bind a request/run/thread id once (structlog bind_contextvars, a logging Filter, a
+          LoggerAdapter) or pass it in extra= on every log call.
+      traceability:
+        detection: candidate
+        severity: medium
+        message: "{unit} calls a model ({provider_calls}) with no trace metadata or callbacks; can each call be traced to the run that caused it?"
+        remediation: >-
+          Pass a tracing callback or config (run_name, tags, metadata with the request/run id),
+          or log the call's id, inputs hash, and outcome under a correlation id.
+
+  E14:
+    name: Test Coverage
+    component: other
+    options:
+      test_paths: ["tests/**", "**/tests/**", "**/test_*.py", "**/*_test.py", "**/tests.py",
+                   "**/conftest.py", "**/*_testing/**", "**/*_test/**", "**/testing/**",
+                   "**/fixtures/**", "**/fixture.py", "**/*testdata*"]
+      live_clients: ["openai.OpenAI", "openai.AsyncOpenAI", "openai.AzureOpenAI",
+                     "openai.AsyncAzureOpenAI", "anthropic.Anthropic", "anthropic.AsyncAnthropic",
+                     "langchain_*.Chat*"]
+      engine_calls: ["sqlalchemy.create_engine", "sqlalchemy.ext.asyncio.create_async_engine",
+                     "psycopg2.connect", "psycopg.connect", "asyncpg.connect"]
+      patch_calls: ["unittest.mock.patch", "unittest.mock.patch.object", "mock.patch"]
+      # A DB engine is "live" only when its URL is a literal naming a real server; an
+      # env/settings-supplied URL is a deliberately provisioned test database.
+      db_url_sources: ["os.getenv", "os.environ.get", "os.environ", "*settings*", "*config*"]
+      mock_factories: ["Mock", "MagicMock", "AsyncMock", "create_autospec", "setattr"]
+    subchecks:
+      no-assert:
+        detection: deterministic
+        severity: medium
+        message: "Test {test} makes no assertion."
+        remediation: "Assert on the observable result, persisted state, or raised error."
+      live-client-in-test:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: deterministic
+        severity: high
+        message: "Test code constructs a live {client}; CI would call the real service."
+        remediation: "Mock the provider or database at the boundary (fake client, respx, SQLite) so CI makes no live calls."
+      patches-sut:
+        experimental: true  # <=12% correct on 20 mature repos after spec 012 fixes
+        detection: heuristic
+        severity: medium
+        message: "Test {test} patches {target}, which looks like the unit under test."
+        remediation: "Patch the unit's dependencies, not the unit itself, or the test exercises the mock."
+      untested-unit:
+        detection: heuristic
+        severity: medium
+        message: "{kind} '{unit}' is not referenced by any test module."
+        remediation: >-
+          Add a test that imports the unit (or the graph builder that registers it) or, for a
+          route, calls its path through a test client, covering the success and failure paths.
+      failure-path:
+        detection: candidate
+        severity: medium
+        message: "Tests {tests} mock dependencies ({mocked}) but never simulate a failure; are the error paths of the unit tested?"
+        remediation: >-
+          Add tests where the mocked dependency raises or returns an error (side_effect=...,
+          timeouts, invalid model output, DB errors) and assert the unit's recovery behaviour.
+
+  E15:
+    name: Static Analysis and Gate Compliance
+    component: other
+    options:
+      # Suppressions whose justification is the file itself (pilot finding, spec 007).
+      self_evident:
+        - {code: F401, paths: ["**/__init__.py", "__init__.py"]}
+    subchecks:
+      bare-noqa:
+        detection: deterministic
+        severity: low
+        message: "{directive} without a rule code suppresses every check on the line."
+        remediation: "Name the codes being suppressed and say why, e.g. # noqa: E501 — long URL."
+      unjustified-suppression:
+        detection: deterministic
+        severity: low
+        message: "{directive} [{codes}] has no justification."
+        remediation: >-
+          Add a reason after the directive (# noqa: E501 — reason, or reason="..." for
+          codepulse: ignore) so the suppression can be reviewed and retired.
+      blanket-disable:
+        detection: deterministic
+        severity: medium
+        message: "File-level directive '{directive}' disables checking for the whole module."
+        remediation: "Suppress specific codes on specific lines with a justification instead."
+      config-blanket-disable:
+        detection: deterministic
+        severity: medium
+        message: "Tool configuration disables checks wholesale: {what}."
+        remediation: "Ignore specific rules, scoped to the paths that need them, with a comment explaining why."
+
+  E16:
+    name: Agent Authorization and Tool Boundaries
+    component: llm_call
+    options:
+      # How tools attach to an agent: `bind_tools([...])`, `ToolNode([...])`,
+      # `create_react_agent(..., tools=[...])`, or a `tools=[...]` kwarg on an agent constructor.
+      tool_binder_calls: ["*.ToolNode", "*.create_react_agent", "*.create_tool_calling_agent"]
+      tool_binder_methods: ["bind_tools"]
+      # Dangerous tool classes by capability (spec 018 bucket A). Globs over the qualified name.
+      code_exec_tools: ["*.PythonREPLTool", "*.PythonAstREPLTool", "*PythonREPL*",
+                        "*.CodeInterpreterTool", "*.E2BDataAnalysisTool", "*.RunCodeTool"]
+      shell_tools: ["*.ShellTool", "*.TerminalTool", "*ShellTool*", "*.BashTool"]
+      fs_write_tools: ["*.WriteFileTool", "*.DeleteFileTool", "*.FileManagementToolkit",
+                       "*.CopyFileTool", "*.MoveFileTool"]
+      http_tools: ["*.RequestsGetTool", "*.RequestsPostTool", "*.RequestsPutTool",
+                   "*.RequestsDeleteTool", "*.RequestsPatchTool", "*RequestsToolkit*"]
+      # MCP transports (spec 018 bucket B). Remote = HTTP/SSE; stdio launches a local process.
+      mcp_remote_transports: ["*.sse_client", "*.streamablehttp_client", "*.MCPServerSSE",
+                              "*.MCPServerSse", "*.MCPServerStreamableHTTP", "*.MCPServerHTTP",
+                              "*.streamable_http_client"]
+      # Only constructors that take the command directly; `stdio_client(params)` takes the params
+      # object, not a command, so it is not an arbitrary-command site.
+      mcp_stdio_transports: ["*.StdioServerParameters", "*.MCPServerStdio"]
+      # Well-known command sources that are not arbitrary input: the current interpreter, a
+      # resolved fixed binary. `which(name)` with a literal name is still a fixed binary.
+      mcp_safe_commands: ["sys.executable", "shutil.which(*)", "which(*)"]
+      # An http_client is counted as "configured" (it may carry the auth), not a bare connection.
+      mcp_auth_kwargs: ["headers", "auth", "token", "api_key", "bearer", "authorization",
+                        "http_client", "httpx_client"]
+      mcp_url_kwargs: ["url", "base_url", "endpoint"]
+    subchecks:
+      dangerous-tool:
+        detection: heuristic
+        severity: high
+        message: "Agent is given a {capability} tool ({tool}); model-directed calls can run it."
+        remediation: >-
+          Scope the tool (an allow-list of commands, paths or domains), require human approval
+          before it runs (e.g. a LangGraph interrupt), and keep it out of any agent reachable from
+          untrusted input (see E03).
+      mcp-untrusted-transport:
+        detection: heuristic
+        severity: high
+        message: "MCP server connected over {transport} with no auth; the agent trusts its tools over an unauthenticated channel."
+        remediation: >-
+          Authenticate the MCP connection (bearer token / headers), pin the server, and allow-list
+          the tools you accept from it. Prefer a local or network-isolated server for sensitive tools.
+      mcp-arbitrary-command:
+        detection: heuristic
+        severity: high
+        message: "MCP server launched from a non-literal command ({transport}); the process started is decided at run time."
+        remediation: >-
+          Launch MCP servers from a fixed, in-repo command and pinned args. Never build the command
+          from config or input, which turns the server into an arbitrary-process surface.

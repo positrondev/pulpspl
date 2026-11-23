@@ -1,0 +1,19 @@
+# Where a SQL string gets executed. `function` entries are qualified-name globs and fire on
+# any dynamically built string; `method` entries match by attribute name on an unresolved
+# receiver (cursor, connection) and fire only when the string starts with a SQL keyword.
+- function: "sqlalchemy.text"
+- function: "sqlalchemy.sql.text"
+- function: "sqlalchemy.sql.expression.text"
+- function: "pandas.read_sql"
+- function: "pandas.read_sql_query"
+- function: "django.db.models.expressions.RawSQL"
+- method: execute
+- method: executemany
+- method: executescript
+- method: exec_driver_sql
+- method: fetch
+- method: fetchrow
+- method: fetchval
+- method: raw
+- method: mogrify
+- method: read_sql

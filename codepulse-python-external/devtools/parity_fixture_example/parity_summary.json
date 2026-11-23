@@ -1,0 +1,10 @@
+{
+  "rule_count": 77,
+  "counts": {
+    "not_exercised": 72,
+    "matching_fixture": 2,
+    "mismatch": 3
+  },
+  "certified_rules": 0,
+  "note": "Matching on a fixture is not certification; require positive, negative, edge and integration cases."
+}

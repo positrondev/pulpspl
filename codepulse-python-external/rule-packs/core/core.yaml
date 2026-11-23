@@ -1,0 +1,614 @@
+schema_version: 1
+pack:
+  id: codepulse-external-starter
+  version: 0.1.0
+rules:
+- id: E12.bare-except
+  name: Bare Except
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: ExceptHandler
+    where:
+      bare_except: true
+  message: Bare except catches system-exiting exceptions.
+  remediation: Catch expected exceptions explicitly.
+  detection: deterministic
+- id: E12.swallow
+  name: Swallow
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: ExceptHandler
+    where:
+      all:
+      - swallow: true
+      - not:
+          bare_except: true
+  message: Exception handler discards an exception.
+  remediation: Handle or re-raise the exception.
+  detection: deterministic
+- id: E12.default-on-failure
+  name: Default On Failure
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: ExceptHandler
+    where:
+      all:
+      - except_return_constant: true
+      - bare_except: true
+  message: Broad exception handling returns a constant fallback.
+  remediation: Handle expected errors and propagate unexpected failures.
+  detection: heuristic
+- id: E14.no-assert
+  name: No Assert
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: FunctionDef
+    where:
+      all:
+      - filename_regex: (^|/)(test_[^/]*|[^/]*_test)\.py$
+      - test_name: true
+      - no_assert: true
+  message: Test function contains no observable assertion.
+  remediation: Assert an outcome, state change, or expected exception.
+  detection: deterministic
+- id: E14.no-assert-async
+  name: No Assert Async
+  languages:
+  - python
+  severity: low
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: AsyncFunctionDef
+    where:
+      all:
+      - filename_regex: (^|/)(test_[^/]*|[^/]*_test)\.py$
+      - test_name: true
+      - no_assert: true
+  message: Async test function contains no observable assertion.
+  remediation: Assert an outcome, state change, or expected exception.
+- id: E09.acquire-outside-with
+  name: Acquire Outside With
+  languages:
+  - python
+  severity: high
+  component: database
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: sqlite3.connect
+      - under_with: false
+  message: SQLite connection is created outside a with block.
+  remediation: Use an explicit context and ensure the connection is closed.
+  detection: deterministic
+- id: E09.acquire-in-loop
+  name: Acquire In Loop
+  languages:
+  - python
+  severity: high
+  component: database
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: sqlite3.connect
+      - under_loop: true
+  message: SQLite connection is created inside a loop.
+  remediation: Reuse or pool connections when appropriate.
+  detection: deterministic
+- id: E09.no-pool-size
+  name: No Pool Size
+  languages:
+  - python
+  severity: medium
+  component: database
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: create_engine
+      - keyword_absent: pool_size
+  message: Database engine declares no explicit pool size.
+  remediation: Specify pool sizing appropriate to deployment.
+  detection: deterministic
+- id: E07.result-no-timeout
+  name: Result No Timeout
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: '*.result'
+      - keyword_absent: timeout
+  message: Blocking future.result() has no timeout.
+  remediation: Set a bounded timeout and handle expiry.
+  detection: deterministic
+- id: E07.pool-no-max-workers
+  name: Pool No Max Workers
+  languages:
+  - python
+  severity: low
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: '*ThreadPoolExecutor'
+      - keyword_absent: max_workers
+  message: ThreadPoolExecutor has no max_workers limit.
+  remediation: Configure worker bounds explicitly.
+  detection: heuristic
+- id: E07.unreferenced-task
+  name: Unreferenced Task
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: asyncio.create_task
+      - ancestor: Expr
+  message: Async task may not be retained or supervised.
+  remediation: Keep task references and observe task failures.
+  detection: deterministic
+- id: E08.interpolated-sql
+  name: Interpolated Sql
+  languages:
+  - python
+  severity: critical
+  component: database
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_glob: '*.execute'
+      - call_arg_regex: (f[\'\"]|%\s*\(|\.format\s*\()
+  message: SQL execution may use interpolated SQL.
+  remediation: Use bound query parameters.
+  detection: deterministic
+- id: E11.credentials-in-url
+  name: Credentials In Url
+  languages:
+  - python
+  severity: critical
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Constant
+    where:
+      literal_regex: https?://[^/:\s]+:[^/@\s]+@
+  message: Credentials appear in an inline URL.
+  remediation: Use environment variables or a secrets manager.
+  detection: deterministic
+- id: E11.hardcoded-endpoint
+  name: Hardcoded Endpoint
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Constant
+    where:
+      literal_regex: ^https?://(?!localhost|127\.0\.0\.1)[^\s]+
+  message: External URL is embedded in source.
+  remediation: Move endpoints into environment configuration.
+  detection: heuristic
+- id: E13.sensitive-in-log
+  name: Sensitive In Log
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: (?:^|\.)(?:debug|info|warning|error|critical|log)$
+      - call_arg_regex: (?i)(password|secret|api_token|access_token|credential)
+  message: Sensitive-looking value may be logged.
+  remediation: Redact credentials at the log boundary.
+  detection: heuristic
+- id: E06.no-output-limit
+  name: No Output Limit
+  languages:
+  - python
+  severity: medium
+  component: llm_call
+  enabled: false
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: (?i)(?:invoke|chat|complete|generate)$
+      - keyword_absent: max_tokens
+  message: Generation call has no explicit token limit.
+  remediation: Set an output limit appropriate to the provider.
+  description: 'EXPERIMENTAL PLACEHOLDER: matcher is too broad or cannot cover comments reliably; disabled by default.'
+  detection: deterministic
+- id: E04.no-timeout
+  name: No Timeout
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: ^(requests\.(?:get|post|put|patch|delete)|httpx\.(?:get|post|put|patch|delete))$
+      - keyword_absent: timeout
+  message: HTTP call has no explicit timeout.
+  remediation: Configure explicit connection and read timeouts.
+  detection: deterministic
+- id: E10.no-auth-declared
+  name: No Auth Declared
+  languages:
+  - python
+  severity: high
+  component: rest_api
+  enabled: true
+  match:
+    type: python_ast
+    node: FunctionDef
+    where:
+      no_auth: true
+  message: Web route appears to have no explicit authentication dependency.
+  remediation: Add route authentication or document an approved public endpoint.
+  detection: heuristic
+- id: E10.no-auth-declared-async
+  name: No Auth Declared Async
+  languages:
+  - python
+  severity: high
+  component: rest_api
+  enabled: true
+  match:
+    type: python_ast
+    node: AsyncFunctionDef
+    where:
+      no_auth: true
+  message: Async web route appears to have no explicit authentication dependency.
+  remediation: Add route authentication or document an approved public endpoint.
+- id: E11.wildcard-cors
+  name: Wildcard Cors
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Constant
+    where:
+      value_equals: '*'
+  message: Wildcard literal may be used in a permissive policy.
+  remediation: Verify whether wildcard access is intended.
+  description: 'EXPERIMENTAL PLACEHOLDER: matcher is too broad or cannot cover comments reliably; disabled by default.'
+  detection: deterministic
+- id: E15.bare-noqa
+  name: Bare Noqa
+  languages:
+  - python
+  severity: low
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Constant
+    where:
+      literal_regex: noqa\s*$
+  message: Bare noqa suppression is not scoped.
+  remediation: Specify the rule being suppressed and justification.
+  description: 'EXPERIMENTAL PLACEHOLDER: matcher is too broad or cannot cover comments reliably; disabled by default.'
+  detection: deterministic
+- id: CP100.console-output
+  name: Console output
+  languages:
+  - python
+  - java
+  - javascript
+  - typescript
+  severity: low
+  component: other
+  enabled: true
+  match:
+    type: regex
+    patterns:
+      python: ^\s*print\s*\(
+      java: \bSystem\.out\.println\s*\(
+      javascript: \bconsole\.log\s*\(
+      typescript: \bconsole\.log\s*\(
+  message: Direct console output detected.
+  remediation: Use structured application logging.
+- id: E12.raise-non-exception
+  name: Raise Non Exception
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Raise
+    where:
+      raise_bad_value: true
+  message: Raise expression is a literal or tuple, not an exception instance.
+  remediation: Raise an exception class or instance.
+  detection: deterministic
+- id: E12.log-and-continue
+  name: Log And Continue
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: ExceptHandler
+    where:
+      except_log_only: true
+  message: Exception handler only logs the failure and continues.
+  remediation: Re-raise or provide explicit recovery when appropriate.
+  detection: heuristic
+- id: E11.hardcoded-secret
+  name: Hardcoded Secret
+  languages:
+  - python
+  severity: critical
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node:
+    - Assign
+    - AnnAssign
+    - keyword
+    - Dict
+    where:
+      hardcoded_secret: true
+  message: Possible hardcoded credential in an assignment or configuration key.
+  remediation: Use a secrets manager or environment-backed secret configuration.
+  detection: heuristic
+- id: E07.blocking-in-async
+  name: Blocking In Async
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - under_async: true
+      - callee_regex: ^(requests\.(get|post|put|patch|delete|request)|time\.sleep|urllib\.request\.urlopen|subprocess\.(run|check_output|check_call|call)|sqlite3\.connect|httpx\.(get|post|request))$
+  message: Blocking I/O call inside an async function.
+  remediation: Use asynchronous APIs or isolate blocking work in a bounded executor.
+  detection: deterministic
+- id: E07.unbounded-submit
+  name: Unbounded Submit
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - under_loop: true
+      - callee_regex: (\.submit|asyncio\.create_task)$
+  message: Work submitted inside a loop may be unbounded.
+  remediation: Use a semaphore or bound the number of pending tasks.
+  detection: heuristic
+- id: E06.unbounded-history
+  name: Unbounded History
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - under_loop: true
+      - callee_regex: .*(\.append|\.extend)$
+      - callee_regex: .*(history|messages|conversation|transcript).*\.(append|extend)$
+  message: Conversation history grows inside a loop without a visible bound.
+  remediation: Bound or summarize history and limit retained messages.
+  detection: heuristic
+- id: E14.live-client-in-test
+  name: Live Client In Test
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - filename_regex: (^|/)(test_[^/]*|[^/]*_test)\.py$
+      - callee_regex: ^(requests\.(get|post|put|delete|request)|httpx\.(get|post|put|delete|request))$
+  message: Test invokes a live HTTP client; tests may depend on external systems.
+  remediation: Mock external dependencies or use an explicitly isolated integration-test suite.
+  detection: deterministic
+- id: E10.success-on-failure
+  name: Success On Failure
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: ExceptHandler
+    where:
+      all:
+      - except_return_constant: true
+      - source_regex: (?s)except[^:]*:.*return\s+(True|["\']success["\']|["\']ok["\'])
+  message: Exception path returns an apparent success value.
+  remediation: Propagate an error response instead of signaling success.
+  detection: heuristic
+- id: E03.inline-long-prompt
+  name: Inline Long Prompt
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Constant
+    where:
+      all:
+      - string_length_gte: 400
+      - literal_regex: (?is)(system|assistant|human|instruction|prompt|context|you are|respond)
+  message: Large prompt text is embedded inline.
+  remediation: Externalize prompt templates and version them.
+  detection: heuristic
+- id: E15.blanket-disable
+  name: Blanket Disable
+  languages:
+  - python
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: regex
+    patterns:
+      python: (?i)#\s*(?:ruff:\s*noqa|pylint:\s*skip-file|flake8:\s*noqa|mypy:\s*ignore-errors)
+  message: File-wide lint suppression suppresses useful findings.
+  remediation: Scope suppressions to individual lines and documented reasons.
+  detection: deterministic
+- id: E15.unjustified-suppression
+  name: Unjustified Suppression
+  languages:
+  - python
+  severity: low
+  component: other
+  enabled: false
+  match:
+    type: regex
+    patterns:
+      python: (?i)#\s*(?:noqa\s*:\s*[A-Z]+\d+|type:\s*ignore\s*\[[^\]]+\])\s*$
+  message: Code suppression has no justification comment.
+  remediation: Add an explicit documented reason for suppression.
+  detection: deterministic
+- id: E08.sql-keyword-literal
+  name: Sql Keyword Literal
+  languages:
+  - python
+  severity: critical
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: JoinedStr
+    where:
+      source_regex: (?is)\b(select|insert|update|delete|drop|alter)\b
+  message: SQL statement constructed using an interpolated f-string.
+  remediation: Use bound SQL parameters instead of string interpolation.
+  detection: heuristic
+- id: E02.untyped-state
+  name: Untyped State
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: (StateGraph|MessageGraph|Workflow|Flow)$
+      - call_arg_regex: \b(dict|Dict|Mapping|Any)\b
+  message: Graph or workflow instantiated with an untyped state schema.
+  remediation: Define a typed state schema and validate its fields.
+  detection: deterministic
+- id: E16.mcp-arbitrary-command
+  name: Mcp Arbitrary Command
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: false
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: ^(subprocess\.(run|Popen|call)|os\.system)$
+      - has_keyword_value_regex: ^shell=True$
+  message: Shell execution with shell=True allows broad command execution.
+  remediation: Use explicit allowlisted commands and shell=False.
+  detection: heuristic
+- id: E15.config-blanket-disable
+  name: Config Blanket Disable
+  languages:
+  - config
+  severity: medium
+  component: other
+  enabled: true
+  match:
+    type: regex
+    patterns:
+      config: (?i)^\s*(?:ignore|extend-ignore|extend_ignore|disable)\s*[:=].*\bALL\b|^\s*ignore[_-]errors\s*[:=]\s*true\b|^\s*select\s*[:=]\s*\[\s*\]
+  message: Tool configuration disables lint or type-checking broadly.
+  remediation: Use narrowly scoped suppressions with explicit justifications.
+  detection: deterministic

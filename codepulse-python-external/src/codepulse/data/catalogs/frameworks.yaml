@@ -1,0 +1,56 @@
+# Agent frameworks beyond LangGraph (spec 013 Part B). Patterns are fnmatch globs over
+# qualified names. Extend per project with `catalogs: {frameworks: [...]}` in codepulse.yaml.
+#
+#   step_decorators   decorators that make a function an orchestration step (E01, E13)
+#   step_bases        base classes whose `step_methods` are steps
+#   state_bases       base classes that carry shared state; unsubscripted = untyped (E02)
+#   agent_runs        calls returning an agent result object (E05)
+#   text_attrs        attributes of that result holding free text (E05)
+#   loops             agent loops and the keywords that stop them (E02); `default_bounded`
+#                     means the framework stops by default and only an explicit None is unbounded
+#
+# LangGraph graph classes stay in rules/_discovery.py for now: the project indexer that
+# reads them has no catalog access yet (spec 013 T1310).
+
+- name: langgraph-functional
+  step_decorators: ["langgraph.func.task", "langgraph.func.entrypoint"]
+
+- name: crewai
+  step_decorators: ["crewai.flow*.start", "crewai.flow*.listen", "crewai.flow*.router"]
+  state_bases: ["crewai.flow*.Flow", "crewai.Flow"]
+  agent_runs: ["crewai.Crew.kickoff*", "crewai.crew.Crew.kickoff*"]
+  text_attrs: ["raw"]
+
+- name: llama-index-workflows
+  step_decorators: ["llama_index.core.workflow*.step", "workflows.step", "workflows.decorators.step"]
+  loops:
+    - calls: ["llama_index.core.workflow*.Workflow", "workflows.Workflow", "workflows.workflow.Workflow"]
+      caps: ["timeout"]
+      default_bounded: true
+
+- name: pydantic-ai
+  step_bases: ["pydantic_graph.BaseNode", "pydantic_graph.nodes.BaseNode"]
+  step_methods: ["run"]
+  agent_runs: ["pydantic_ai.Agent.run*", "pydantic_ai.agent.Agent.run*"]
+  text_attrs: ["output", "data"]
+
+- name: openai-agents
+  agent_runs: ["agents.Runner.run*", "agents.run.Runner.run*"]
+  text_attrs: ["final_output"]
+
+- name: google-adk
+  step_bases: ["google.adk.agents.BaseAgent", "google.adk.agents.base_agent.BaseAgent"]
+  step_methods: ["_run_async_impl", "_run_live_impl"]
+  loops:
+    - calls: ["google.adk.agents.LoopAgent", "google.adk.agents.loop_agent.LoopAgent"]
+      caps: ["max_iterations"]
+
+- name: autogen
+  loops:
+    - calls: ["autogen_agentchat.teams.RoundRobinGroupChat", "autogen_agentchat.teams.SelectorGroupChat",
+              "autogen_agentchat.teams.Swarm", "autogen_agentchat.teams._group_chat.*GroupChat"]
+      caps: ["termination_condition", "max_turns"]
+      positional_caps_after: 1  # (participants, termination_condition, ...) in older releases
+
+- name: temporal
+  step_decorators: ["temporalio.workflow.run", "temporalio.activity.defn"]

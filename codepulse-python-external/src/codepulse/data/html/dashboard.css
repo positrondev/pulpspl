@@ -1,0 +1,13 @@
+.repos{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin:0 0 24px}
+.repo{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px}
+.repo h3{margin:0 0 2px;font-size:16px;word-break:break-all}.bars{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+.chip{display:inline-block;font-size:12px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);color:var(--low)}
+.chip[data-sev=critical]{color:var(--critical);border-color:var(--critical)}.chip[data-sev=high]{color:var(--high);border-color:var(--high)}
+.chip[data-sev=medium]{color:var(--medium);border-color:var(--medium)}.muted{color:var(--muted)}
+.spark{width:160px;height:32px;display:block}.spark polyline{fill:none;stroke:var(--medium);stroke-width:2}
+.row{cursor:pointer}.row:hover,.row:focus{background:var(--card);outline:none}.detail td{background:var(--card)}
+.copy{font:inherit;font-size:13px;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);cursor:pointer}
+.tablewrap{overflow-x:auto}label{color:var(--muted);font-size:14px;align-self:center}h2{font-size:18px;margin:24px 0 8px}
+#issues td{word-break:break-word}#issues td:nth-child(4),#issues td:nth-child(5){min-width:140px}
+#issues td:nth-child(6){min-width:200px}table{table-layout:auto}
+#issues td:nth-child(1),#issues td:nth-child(2){white-space:nowrap;word-break:normal}

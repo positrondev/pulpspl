@@ -1,0 +1,15 @@
+# External prompt registries (spec 017): calls that fetch a prompt body at run time. The
+# fetched text is unknowable statically, and a prompt from here reaching the instruction turn
+# is controlled outside the repository and version control. Globs over the resolved qualified
+# name (and, as a fallback, the bare dotted path). Extend per project with
+# `catalogs: {prompt_stores: [...]}` in codepulse.yaml.
+- "langfuse*.get_prompt"
+- "*.Langfuse.get_prompt"
+- "*langfuse*.get_prompt"
+- "langchain*.hub.pull"
+- "langchainhub*.pull"
+- "langsmith*.pull_prompt"
+- "*.pull_prompt"
+- "promptlayer*.get_prompt_template"
+- "promptlayer*.templates.get"
+- "humanloop*.prompts.get"

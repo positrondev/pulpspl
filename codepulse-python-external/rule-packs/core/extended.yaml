@@ -1,0 +1,55 @@
+schema_version: 1
+pack:
+  id: codepulse-python-extended
+  version: 0.2.0
+rules:
+- id: E10.unvalidated-body
+  name: Raw request body accessed inside API route
+  languages:
+  - python
+  severity: high
+  component: rest_api
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - ancestor_decorator_regex: (?:^|\.)(?:get|post|put|patch|delete|route)\(
+      - callee_regex: (?:^|\.)(?:json|body|form|get_json|get_data)\Z
+  message: API handler reads the raw request payload rather than validated input.
+  remediation: Validate incoming request data using a typed input schema.
+  detection: deterministic
+- id: E16.mcp-untrusted-transport
+  name: Remote MCP transport with no explicit authentication
+  languages:
+  - python
+  severity: high
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      all:
+      - callee_regex: (?:^|\.)(?:sse_client|streamablehttp_client|streamable_http_client|MCPServerSSE|MCPServerSse|MCPServerStreamableHTTP|MCPServerHTTP)\Z
+      - keyword_absent_regex: ^(?:headers|auth|token|api_key|bearer|authorization|http_client|httpx_client)$
+      - kwargs_any: false
+      - literal_external_url: true
+  message: MCP transport uses an external literal URL without explicit authentication.
+  remediation: Configure authenticated transport and approved remote MCP servers.
+  detection: heuristic
+- id: E16.dangerous-tool
+  name: High-capability tool bound to agent
+  languages: [python]
+  severity: high
+  detection: heuristic
+  component: other
+  enabled: true
+  match:
+    type: python_ast
+    node: Call
+    where:
+      bound_tool_regex: '(?:Python(?:Ast)?REPL|CodeInterpreter|E2BDataAnalysis|RunCode|ShellTool|TerminalTool|BashTool|WriteFileTool|DeleteFileTool|FileManagementToolkit|CopyFileTool|MoveFileTool|Requests(?:Get|Post|Put|Delete|Patch)Tool|RequestsToolkit)'
+  message: Agent binds a high-capability execution, filesystem, or network tool.
+  remediation: Restrict tool permissions and require approval for sensitive operations.

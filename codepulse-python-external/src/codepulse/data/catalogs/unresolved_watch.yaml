@@ -1,0 +1,23 @@
+# Callee shapes the built-in rules analyze when they can resolve the target. An unresolved
+# call matching one of these (e.g. `llm.invoke` on an unannotated parameter) is listed in the
+# report's "Unresolved calls" section: no provider rule ran on it (spec 006 FR-603).
+# Fix a listed call by annotating the variable (`llm: ChatOpenAI`) or constructing the
+# client in the same module, or extend `catalogs: {providers: ...}` for an in-house gateway.
+# A leading "!" excludes: tools, graphs, and retrievers are runnables, not model calls.
+- "!*tool.*invoke"
+- "!*tools.*invoke"
+- "!*graph.*invoke"
+- "!*app.*invoke"
+- "!*_search.*invoke"
+- "!*retriever.*invoke"
+- "*.invoke"
+- "*.ainvoke"
+- "*.chat.completions.create"
+- "*.chat.completions.parse"
+- "*.responses.create"
+- "*.responses.parse"
+- "*.messages.create"
+- "*.messages.stream"
+- "*.generate_content"
+- "*completion"                 # injected callables: self._completion(...), acompletion(...)
+- "*.with_structured_output"

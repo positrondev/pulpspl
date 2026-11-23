@@ -1,0 +1,12 @@
+# Central Code Pulse configuration: never place in the analyzed repository.
+output_dir: ../reports/latest
+dashboard_dir: ../reports/dashboard
+store:
+  enabled: true
+external_rules:
+  mode: external_only
+  enabled: true
+  directories:
+    - ../rule-packs/core
+    - ../rule-packs/custom
+  strict_validation: true

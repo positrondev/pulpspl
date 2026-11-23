@@ -1,0 +1,131 @@
+schema_version: 1
+pack:
+  id: codepulse-python-structural
+  version: "0.3.0"
+rules:
+  - id: E01.workflow-nondeterminism
+    name: Nondeterministic call inside Temporal workflow
+    languages: [python]
+    severity: high
+    detection: deterministic
+    component: graph_node
+    enabled: true
+    match:
+      type: python_ast
+      node: Call
+      where:
+        all:
+          - ancestor_class_decorator_regex: '(?:^|\.)workflow\.defn(?:\(|$)'
+          - ancestor_decorator_regex: '(?:^|\.)workflow\.run(?:\(|$)'
+          - resolved_callee_regex: '^(?:datetime\.(?:datetime\.(?:now|utcnow|today)|date\.today)|time\.(?:time|time_ns|monotonic|perf_counter)|random\.[a-z_]+|uuid\.uuid[14]|os\.urandom|secrets\.[a-z_]+)$'
+    message: Temporal workflow calls an API that may not be replay deterministic.
+    remediation: Move nondeterministic I/O to activities; use workflow-provided replay-safe utilities.
+
+  - id: E02.shared-thread-id
+    name: Constant LangGraph checkpoint thread identifier
+    languages: [python]
+    severity: high
+    detection: deterministic
+    component: graph_node
+    enabled: false
+    match:
+      type: python_ast
+      node: Call
+      where:
+        all:
+          - callee_regex: '\.(?:invoke|ainvoke|stream|astream)\Z'
+          - dict_path_literal: 'config.configurable.thread_id'
+    message: A graph execution uses a literal checkpoint thread identifier; review cross-user isolation.
+    remediation: Derive thread_id dynamically from an authenticated user or session.
+
+  - id: E02.unbounded-agent-loop
+    name: Agent loop without a clear maximum iteration count
+    languages: [python]
+    severity: high
+    detection: deterministic
+    component: graph_node
+    enabled: false
+    match:
+      type: python_ast
+      node: Call
+      where:
+        all:
+          - resolved_callee_regex: '(?:^|\.)(?:LoopAgent|RoundRobinGroupChat|SelectorGroupChat)\Z'
+          - keyword_absent_regex: '^(?:max_iterations|max_turns|max_steps|termination_condition)$'
+          - kwargs_any: false
+    message: An agent loop may lack an explicit termination or maximum-iteration guard.
+    remediation: Set a hard termination condition or maximum iteration count.
+
+  - id: E02.workflow-history-unbounded
+    name: Potential unbounded Temporal workflow history
+    languages: [python]
+    severity: high
+    detection: heuristic
+    component: graph_node
+    enabled: false
+    match:
+      type: python_ast
+      node: While
+      where:
+        all:
+          - ancestor_decorator_regex: '(?:^|\.)workflow\.run(?:\(|$)'
+          - has_call: '*execute_activity*'
+          - not_has_call: '*continue_as_new*'
+    message: Loop invokes activities without an obvious continue-as-new boundary.
+    remediation: Review loop bounds and use continue_as_new for long-lived workflows.
+
+  - id: E03.interpolated-prompt
+    name: Dynamic prompt template passed to construction API
+    languages: [python]
+    severity: medium
+    detection: heuristic
+    component: llm_call
+    enabled: false
+    match:
+      type: python_ast
+      node: Call
+      where:
+        all:
+          - resolved_callee_regex: '(?:^|\.)(?:from_template|from_messages|SystemMessage|ChatPromptTemplate|PromptTemplate)\Z'
+          - call_has_fstring_arg: true
+    message: Prompt instructions appear to be constructed using dynamic string interpolation.
+    remediation: Keep instructions in trusted templates and put untrusted data in user input fields.
+
+  - id: E09.txn-no-rollback
+    name: Transaction begin without obvious rollback handling
+    languages: [python]
+    severity: high
+    detection: heuristic
+    component: database
+    enabled: false
+    match:
+      type: python_ast
+      node: Call
+      where:
+        all:
+          - callee_regex: '\.(?:begin|begin_nested)\Z'
+          - under_with: false
+          - not:
+              scope_call_regex: '(?:^|\.)(?:rollback)\Z'
+    message: Transaction begins outside a context manager with no apparent rollback in the surrounding scope.
+    remediation: Use a transaction context manager or guaranteed rollback on failure.
+
+  - id: E11.high-entropy-literal
+    name: High entropy credential-shaped literal
+    languages: [python]
+    severity: high
+    detection: heuristic
+    component: other
+    enabled: false
+    match:
+      type: python_ast
+      node: Constant
+      where:
+        all:
+          - string_length_gte: 24
+          - string_entropy_gte: 3.7
+          - literal_regex: '[0-9]'
+          - not:
+              literal_regex: '^(?:https?://|/|\$\{|example|dummy)'
+    message: A high-entropy string literal might contain secret material; review before acting.
+    remediation: If this is a secret, move it to a secrets manager; otherwise document a justified exception.

@@ -1,0 +1,70 @@
+[project]
+name = "codepulse"
+dynamic = ["version"]
+description = "Offline, read-only review analyzer for Python agentic stacks (E01–E15)."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+dependencies = ["pyyaml>=6.0.2", "sqlalchemy>=2.0.30", "alembic>=1.13"]
+
+[project.scripts]
+codepulse = "codepulse.cli:main"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.100",
+    "mypy>=1.11",
+    "pytest>=8.3",
+    "pytest-cov>=5.0",
+    "ruff>=0.6",
+    "types-PyYAML>=6.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/codepulse/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/codepulse"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "PT", "N", "S", "BLE", "C4", "PTH", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+# The CLI is the terminal boundary; everything below it returns data instead of printing.
+"src/codepulse/cli.py" = ["T201"]
+# Benchmark scripts are terminal tools that drive git, curl and codepulse with fixed argv
+# (long token URLs and command lists); not shipped, so E501 is noise here.
+"bench/**" = ["T201", "S603", "S607", "E501"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+mypy_path = "src"
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+xfail_strict = true
+
+[tool.coverage.run]
+source = ["codepulse"]
+branch = true
+
+[tool.coverage.report]
+# Constitution Art. VI: ≥ 90% on core.
+include = ["src/codepulse/core/*", "src/codepulse/core/**/*"]
+fail_under = 90
+show_missing = true
+skip_covered = true
